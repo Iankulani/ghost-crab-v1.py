@@ -1,0 +1,220 @@
+# ============================================
+# GHOST-CRAB-V1 - Ninja Build Configuration
+# ============================================
+
+ninja_required_version = 1.10
+
+# Variables
+python = python3
+pip = pip3
+pytest = pytest
+docker = docker
+docker_compose = docker-compose
+app_name = ghost-crab-v1
+version = 1.0.0
+build_dir = build
+dist_dir = dist
+test_dir = tests
+
+# Compiler flags
+cflags = -O2 -Wall -Wextra
+ldflags = 
+
+# Phony targets
+phony all
+phony clean
+phony test
+phony build
+phony docker
+phony docker-alpine
+phony docker-compose
+phony install
+phony docs
+phony lint
+phony format
+phony security
+phony package
+phony deploy
+phony run
+phony health
+
+# ==================== DEFAULT ====================
+default all
+
+# ==================== ALL ====================
+build all: phony install lint test health
+    description = Build everything
+
+# ==================== CLEAN ====================
+build clean: phony
+    command = rm -rf $build_dir $dist_dir .pytest_cache __pycache__ *.pyc *.pyo
+    description = Cleaning build artifacts
+
+# ==================== INSTALL ====================
+build install: phony
+    command = $pip install -r requirements.txt
+    description = Installing dependencies
+
+build install-dev: phony
+    command = $pip install -r requirements.txt && $pip install -r requirements-dev.txt
+    description = Installing development dependencies
+
+# ==================== LINT ====================
+build lint: phony
+    command = flake8 --max-line-length=120 --ignore=E501,W503,E203 ghost_crab_v1.py test-commands.py health-check.py
+    description = Running linter
+
+build lint-fix: phony
+    command = autopep8 --in-place --aggressive --aggressive ghost_crab_v1.py
+    description = Auto-fixing lint issues
+
+# ==================== FORMAT ====================
+build format: phony
+    command = black --line-length 120 ghost_crab_v1.py test-commands.py health-check.py
+    description = Formatting code
+
+build format-check: phony
+    command = black --check --line-length 120 ghost_crab_v1.py
+    description = Checking code format
+
+# ==================== TEST ====================
+build test: phony
+    command = $pytest $test_dir -v --cov=. --cov-report=html --cov-report=term
+    description = Running tests
+
+build test-unit: phony
+    command = $pytest $test_dir/unit -v
+    description = Running unit tests
+
+build test-integration: phony
+    command = $pytest $test_dir/integration -v
+    description = Running integration tests
+
+build test-commands: phony
+    command = $python test-commands.py
+    description = Testing commands
+
+build test-coverage: phony
+    command = $pytest $test_dir --cov=. --cov-report=html --cov-report=xml
+    description = Generating coverage report
+
+# ==================== HEALTH ====================
+build health: phony
+    command = $python health-check.py
+    description = Running health check
+
+# ==================== BUILD ====================
+build build: phony
+    command = $python -m build
+    description = Building Python package
+
+build build-exe: phony
+    command = pyinstaller --onefile --name $app_name ghost_crab_v1.py
+    description = Building executable
+
+build build-wheel: phony
+    command = $python setup.py bdist_wheel
+    description = Building wheel
+
+# ==================== DOCKER ====================
+build docker: phony
+    command = $docker build -t $app_name:$version -f Dockerfile .
+    description = Building Docker image
+
+build docker-alpine: phony
+    command = $docker build -t $app_name:$version-alpine -f Dockerfile.alpine .
+    description = Building Alpine Docker image
+
+build docker-run: phony
+    command = $docker run -d --name $app_name -p 5000:5000 -p 8080:8080 $app_name:$version
+    description = Running Docker container
+
+build docker-stop: phony
+    command = $docker stop $app_name && $docker rm $app_name
+    description = Stopping Docker container
+
+build docker-compose: phony
+    command = $docker_compose up -d --build
+    description = Starting with Docker Compose
+
+build docker-compose-down: phony
+    command = $docker_compose down
+    description = Stopping Docker Compose
+
+build docker-compose-logs: phony
+    command = $docker_compose logs -f
+    description = Viewing Docker Compose logs
+
+build docker-push: phony
+    command = $docker push $app_name:$version
+    description = Pushing Docker image
+
+# ==================== SECURITY ====================
+build security: phony
+    command = bandit -r . -f json -o bandit-report.json && safety check
+    description = Running security scan
+
+build security-deps: phony
+    command = pip-audit
+    description = Auditing dependencies
+
+# ==================== DOCS ====================
+build docs: phony
+    command = mkdocs build
+    description = Building documentation
+
+build docs-serve: phony
+    command = mkdocs serve
+    description = Serving documentation
+
+# ==================== PACKAGE ====================
+build package: phony
+    command = $python setup.py sdist bdist_wheel
+    description = Creating distribution package
+
+build publish: phony
+    command = twine upload dist/*
+    description = Publishing to PyPI
+
+# ==================== RUN ====================
+build run: phony
+    command = $python ghost_crab_v1.py
+    description = Running application
+
+build run-debug: phony
+    command = $python -m pdb ghost_crab_v1.py
+    description = Running in debug mode
+
+# ==================== DEPLOY ====================
+build deploy-staging: phony
+    command = ssh $STAGING_HOST "cd /opt/ghost-crab && git pull && docker-compose up -d"
+    description = Deploying to staging
+
+build deploy-prod: phony
+    command = ssh $PROD_HOST "cd /opt/ghost-crab && git pull && docker-compose up -d"
+    description = Deploying to production
+
+# ==================== UTILITIES ====================
+build requirements: phony
+    command = pip freeze > requirements.txt
+    description = Freezing requirements
+
+build check-requirements: phony
+    command = $python requirements-check.py
+    description = Checking requirements
+
+build count-lines: phony
+    command = wc -l ghost_crab_v1.py requirements.txt test-commands.py health-check.py
+    description = Counting lines
+
+build tree: phony
+    command = tree -I '__pycache__|*.pyc|.git|build|dist'
+    description = Displaying project tree
+
+build backup: phony
+    command = tar -czf backup-$(date +%Y%m%d).tar.gz ghost_crab_v1.py requirements.txt Dockerfile docker-compose.yml
+    description = Creating backup
+
+build init: phony
+    command = $python ghost_crab_v1.py --init
+    description = Initializing configuration

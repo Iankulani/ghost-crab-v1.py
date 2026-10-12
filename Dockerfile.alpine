@@ -1,0 +1,117 @@
+# ============================================
+# GHOST-CRAB-V1 - Dockerfile (Alpine-based)
+# Lightweight version
+# ============================================
+
+FROM alpine:3.19
+
+LABEL maintainer="Ian Carter Kulani"
+LABEL description="GHOST-CRAB-V1 - Cyber Command Platform (Alpine)"
+LABEL version="1.0.0"
+
+# Set environment
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PATH="/app/.local/bin:${PATH}"
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apk add --no-cache \
+    # Core
+    python3 \
+    py3-pip \
+    py3-virtualenv \
+    build-base \
+    gcc \
+    g++ \
+    make \
+    cmake \
+    musl-dev \
+    linux-headers \
+    # Network tools
+    nmap \
+    nmap-scripts \
+    curl \
+    wget \
+    netcat-openbsd \
+    bind-tools \
+    traceroute \
+    whois \
+    tcpdump \
+    net-tools \
+    iputils \
+    iproute2 \
+    openssh-client \
+    # Security tools
+    hydra \
+    sqlmap \
+    # Development
+    git \
+    vim \
+    nano \
+    htop \
+    tree \
+    jq \
+    # Libraries
+    openssl-dev \
+    libffi-dev \
+    libxml2-dev \
+    libxslt-dev \
+    jpeg-dev \
+    libpng-dev \
+    freetype-dev \
+    postgresql-dev \
+    libmagic \
+    libpcap-dev \
+    # Python deps
+    py3-numpy \
+    py3-pandas \
+    py3-requests \
+    py3-yaml \
+    py3-cryptography \
+    py3-openssl \
+    # Browser
+    chromium \
+    chromium-chromedriver \
+    # Misc
+    ca-certificates \
+    bash \
+    shadow \
+    && rm -rf /var/cache/apk/*
+
+# Create virtual environment
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Upgrade pip
+RUN pip install --upgrade pip setuptools wheel
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install Python packages
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application
+COPY . .
+
+# Create directories
+RUN mkdir -p /app/.ghost_crab_v1/{payloads,workspaces,scans,phishing_pages,phishing_templates,captured_credentials,ssh_keys,traffic_logs,nikto_results,reports,keylogs,keylog_screenshots,dos_logs,agents,c2_logs,modules,network_monitor,keylog_exfil,deployments,domain_hosting,reverse_engineering,cracking,docker_scans,saas,malware,images}
+
+# Create user
+RUN adduser -D -s /bin/bash ghostcrab && \
+    chown -R ghostcrab:ghostcrab /app
+
+USER ghostcrab
+
+# Expose ports
+EXPOSE 5000 8080 4444 5555 9001
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python3 health-check.py || exit 1
+
+# Entry point
+ENTRYPOINT ["python3", "ghost_crab_v1.py"]

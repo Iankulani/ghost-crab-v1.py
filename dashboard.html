@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>👻 GHOST-CRAB-V1 Dashboard</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --black: #0a0a0a;
+            --dark: #1a1a1a;
+            --card: #222222;
+            --red: #ff0000;
+            --red-dark: #cc0000;
+            --red-glow: rgba(255, 0, 0, 0.3);
+            --white: #ffffff;
+            --gray: #888888;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Courier New', monospace;
+            background: var(--black);
+            color: var(--white);
+            min-height: 100vh;
+        }
+        .header {
+            background: linear-gradient(180deg, #1a0000 0%, #0a0a0a 100%);
+            padding: 20px;
+            border-bottom: 2px solid var(--red);
+        }
+        .header h1 {
+            text-align: center;
+            font-size: 2em;
+            letter-spacing: 6px;
+        }
+        .header h1 span { color: var(--red); }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: var(--dark);
+            border: 1px solid var(--red-dark);
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+        }
+        .stat-card h3 {
+            font-size: 2.5em;
+            color: var(--red);
+        }
+        .stat-card p {
+            margin-top: 10px;
+            color: var(--gray);
+        }
+        .section {
+            background: var(--dark);
+            border: 1px solid var(--red-dark);
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .section h2 {
+            margin-bottom: 15px;
+            color: var(--white);
+            border-bottom: 1px solid var(--red-dark);
+            padding-bottom: 10px;
+        }
+        .terminal {
+            background: var(--black);
+            border: 1px solid var(--red-dark);
+            border-radius: 4px;
+            padding: 15px;
+            font-family: 'Courier New', monospace;
+            min-height: 200px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .terminal-input {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .terminal-input input {
+            flex: 1;
+            padding: 10px;
+            background: var(--black);
+            border: 1px solid var(--red-dark);
+            border-radius: 4px;
+            color: var(--white);
+            font-family: 'Courier New', monospace;
+        }
+        .terminal-input input:focus {
+            outline: none;
+            border-color: var(--red);
+        }
+        button {
+            padding: 10px 20px;
+            background: var(--red-dark);
+            color: var(--white);
+            border: 1px solid var(--red);
+            border-radius: 4px;
+            cursor: pointer;
+            font-family: 'Courier New', monospace;
+        }
+        button:hover {
+            background: var(--red);
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 10px;
+            text-align: left;
+            border-bottom: 1px solid var(--red-dark);
+        }
+        th {
+            color: var(--red);
+        }
+        .chart-container {
+            height: 300px;
+            position: relative;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>👻 GHOST<span>-CRAB-V1</span> DASHBOARD</h1>
+    </div>
+    
+    <div class="container">
+        <div class="grid" id="stats">
+            <div class="stat-card"><h3 id="statCommands">0</h3><p>Commands</p></div>
+            <div class="stat-card"><h3 id="statThreats">0</h3><p>Threats</p></div>
+            <div class="stat-card"><h3 id="statBlocked">0</h3><p>Blocked IPs</p></div>
+            <div class="stat-card"><h3 id="statCreds">0</h3><p>Credentials</p></div>
+            <div class="stat-card"><h3 id="statDomains">0</h3><p>Domains</p></div>
+            <div class="stat-card"><h3 id="statPayloads">0</h3><p>Payloads</p></div>
+        </div>
+        
+        <div class="section">
+            <h2>📊 System Overview</h2>
+            <div class="chart-container">
+                <canvas id="overviewChart"></canvas>
+            </div>
+        </div>
+        
+        <div class="section">
+            <h2>🚀 Command Center</h2>
+            <div class="terminal" id="terminal-output">Ready for commands...</div>
+            <div class="terminal-input">
+                <input type="text" id="command-input" placeholder="Enter command...">
+                <button onclick="executeCommand()">Execute</button>
+            </div>
+        </div>
+        
+        <div class="section">
+            <h2>🚨 Recent Threats</h2>
+            <table>
+                <thead><tr><th>Time</th><th>Type</th><th>Source</th><th>Severity</th></tr></thead>
+                <tbody id="threats-table"></tbody>
+            </table>
+        </div>
+    </div>
+    
+    <script>
+        const socket = io();
+        let overviewChart = null;
+        
+        function executeCommand() {
+            const input = document.getElementById('command-input');
+            const command = input.value.trim();
+            if (!command) return;
+            
+            fetch('/api/command', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({command: command})
+            })
+            .then(r => r.json())
+            .then(data => {
+                const output = document.getElementById('terminal-output');
+                output.innerHTML += `<br><span style="color:#ff0000">$></span> ${command}<br>${data.output || data.error}`;
+                output.scrollTop = output.scrollHeight;
+                input.value = '';
+            });
+        }
+        
+        function loadStats() {
+            fetch('/api/stats')
+            .then(r => r.json())
+            .then(data => {
+                document.getElementById('statCommands').textContent = data.total_commands || 0;
+                document.getElementById('statThreats').textContent = data.total_threats || 0;
+                document.getElementById('statBlocked').textContent = data.blocked_ips || 0;
+                document.getElementById('statCreds').textContent = data.captured_credentials || 0;
+                document.getElementById('statDomains').textContent = data.total_domain_hosts || 0;
+                document.getElementById('statPayloads').textContent = data.total_malware_payloads || 0;
+                updateChart(data);
+            });
+        }
+        
+        function updateChart(data) {
+            const ctx = document.getElementById('overviewChart').getContext('2d');
+            if (overviewChart) overviewChart.destroy();
+            
+            overviewChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Commands', 'Threats', 'Blocked IPs', 'Credentials', 'Domains', 'Payloads'],
+                    datasets: [{
+                        data: [
+                            data.total_commands || 0,
+                            data.total_threats || 0,
+                            data.blocked_ips || 0,
+                            data.captured_credentials || 0,
+                            data.total_domain_hosts || 0,
+                            data.total_malware_payloads || 0
+                        ],
+                        backgroundColor: ['#ff0000', '#ff4500', '#ff6347', '#ff7f50', '#ffa07a', '#ffcc00']
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'right',
+                            labels: { color: '#ffffff' }
+                        }
+                    }
+                }
+            });
+        }
+        
+        function loadThreats() {
+            fetch('/api/threats')
+            .then(r => r.json())
+            .then(data => {
+                const tbody = document.getElementById('threats-table');
+                if (data.threats && data.threats.length > 0) {
+                    tbody.innerHTML = data.threats.map(t => `
+                        <tr>
+                            <td>${(t.timestamp || '').substring(0, 19)}</td>
+                            <td>${t.threat_type || 'Unknown'}</td>
+                            <td>${t.source_ip || 'Unknown'}</td>
+                            <td>${t.severity || 'low'}</td>
+                        </tr>
+                    `).join('');
+                } else {
+                    tbody.innerHTML = '<tr><td colspan="4">No threats detected</td></tr>';
+                }
+            });
+        }
+        
+        document.getElementById('command-input').addEventListener('keypress', e => {
+            if (e.key === 'Enter') executeCommand();
+        });
+        
+        loadStats();
+        loadThreats();
+        setInterval(loadStats, 10000);
+        setInterval(loadThreats, 10000);
+    </script>
+</body>
+</html>

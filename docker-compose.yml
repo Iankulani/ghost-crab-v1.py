@@ -1,0 +1,281 @@
+# ============================================
+# GHOST-CRAB-V1 - Docker Compose Configuration
+# ============================================
+
+version: '3.8'
+
+services:
+  # Main Application
+  ghost-crab:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ghost-crab-v1
+    hostname: ghost-crab
+    restart: unless-stopped
+    ports:
+      - "5000:5000"   # Web Dashboard
+      - "8080:8080"   # Phishing Server
+      - "4444:4444"   # C2 Server
+      - "5555:5555"   # Metasploit RPC
+      - "9001:9001"   # Supervisor
+    volumes:
+      - ./data:/app/.ghost_crab_v1
+      - ./reports:/app/reports
+      - ./config:/app/config
+      - ./logs:/app/logs
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - GHOST_CRAB_ENV=production
+      - GHOST_CRAB_LOG_LEVEL=INFO
+      - GHOST_CRAB_WEB_PORT=5000
+      - GHOST_CRAB_WEB_HOST=0.0.0.0
+      - GHOST_CRAB_DB_PATH=/app/.ghost_crab_v1/ghost_crab_v1.db
+      - PYTHONUNBUFFERED=1
+    env_file:
+      - .env
+    networks:
+      - ghost-net
+    healthcheck:
+      test: ["CMD", "python3", "health-check.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: ghost-crab-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-ghostcrab123}
+    networks:
+      - ghost-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: ghost-crab-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    environment:
+      - POSTGRES_DB=ghostcrab
+      - POSTGRES_USER=ghostcrab
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-ghostcrab123}
+    networks:
+      - ghost-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ghostcrab"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+
+  # MongoDB for logs
+  mongodb:
+    image: mongo:6
+    container_name: ghost-crab-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb-data:/data/db
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=ghostcrab
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-ghostcrab123}
+    networks:
+      - ghost-net
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: ghost-crab-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./reports:/var/www/reports:ro
+    depends_on:
+      - ghost-crab
+    networks:
+      - ghost-net
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+
+  # Prometheus Monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: ghost-crab-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    networks:
+      - ghost-net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  # Grafana Dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: ghost-crab-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-ghostcrab123}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    depends_on:
+      - prometheus
+    networks:
+      - ghost-net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  # Elasticsearch for logs
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: ghost-crab-elasticsearch
+    restart: unless-stopped
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    networks:
+      - ghost-net
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+
+  # Kibana for log visualization
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.0
+    container_name: ghost-crab-kibana
+    restart: unless-stopped
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    depends_on:
+      - elasticsearch
+    networks:
+      - ghost-net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  # Portainer for container management
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: ghost-crab-portainer
+    restart: unless-stopped
+    ports:
+      - "9443:9443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer-data:/data
+    networks:
+      - ghost-net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+networks:
+  ghost-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  redis-data:
+  postgres-data:
+  mongodb-data:
+  prometheus-data:
+  grafana-data:
+  elasticsearch-data:
+  portainer-data:

@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ghost-crab
+  namespace: ghost-crab
+  labels:
+    app: ghost-crab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ghost-crab
+  template:
+    metadata:
+      labels:
+        app: ghost-crab
+    spec:
+      containers:
+      - name: ghost-crab
+        image: ghost-crab-v1:latest
+        ports:
+        - containerPort: 5000
+          name: web
+        - containerPort: 8080
+          name: phish
+        - containerPort: 4444
+          name: c2
+        env:
+        - name: GHOST_CRAB_ENV
+          value: "production"
+        - name: GHOST_CRAB_LOG_LEVEL
+          value: "INFO"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /app/.ghost_crab_v1
+        - name: reports
+          mountPath: /app/reports
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: ghost-crab-data
+      - name: reports
+        persistentVolumeClaim:
+          claimName: ghost-crab-reports
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ghost-crab
+  namespace: ghost-crab
+spec:
+  selector:
+    app: ghost-crab
+  ports:
+  - name: web
+    port: 5000
+    targetPort: 5000
+  - name: phish
+    port: 8080
+    targetPort: 8080
+  type: LoadBalancer
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ghost-crab-data
+  namespace: ghost-crab
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ghost-crab-reports
+  namespace: ghost-crab
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi

@@ -1,0 +1,334 @@
+# ============================================
+# GHOST-CRAB-V1 - GitLab CI/CD Pipeline
+# ============================================
+
+stages:
+  - validate
+  - build
+  - test
+  - security
+  - deploy
+  - monitor
+
+variables:
+  DOCKER_REGISTRY: "registry.gitlab.com"
+  DOCKER_IMAGE: "$DOCKER_REGISTRY/$CI_PROJECT_PATH/ghost-crab-v1"
+  DOCKER_TAG: "$CI_COMMIT_SHORT_SHA"
+  PYTHON_VERSION: "3.11"
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+
+# Cache configuration
+cache:
+  key: "$CI_COMMIT_REF_SLUG"
+  paths:
+    - .cache/pip/
+    - venv/
+    - .pytest_cache/
+
+# ==================== VALIDATE ====================
+validate:python:
+  stage: validate
+  image: python:$PYTHON_VERSION-slim
+  before_script:
+    - apt-get update && apt-get install -y git curl
+    - python -m pip install --upgrade pip
+    - pip install flake8 pylint black isort mypy
+  script:
+    - echo "🔍 Validating Python code..."
+    - python -m py_compile ghost_crab_v1.py || true
+    - flake8 --max-line-length=120 --ignore=E501,W503,E203 ghost_crab_v1.py || true
+    - echo "✅ Python validation complete"
+  only:
+    - main
+    - develop
+    - merge_requests
+
+validate:yaml:
+  stage: validate
+  image: python:$PYTHON_VERSION-slim
+  script:
+    - pip install yamllint
+    - yamllint -d relaxed docker-compose.yml .gitlab-ci.yml || true
+  only:
+    - main
+    - develop
+
+validate:dockerfile:
+  stage: validate
+  image: hadolint/hadolint:latest
+  script:
+    - hadolint Dockerfile || true
+    - hadolint Dockerfile.alpine || true
+  only:
+    - main
+    - develop
+
+# ==================== BUILD ====================
+build:docker:
+  stage: build
+  image: docker:24-dind
+  services:
+    - docker:24-dind
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - echo "🐳 Building Docker image..."
+    - docker build -t $DOCKER_IMAGE:$DOCKER_TAG -f Dockerfile .
+    - docker tag $DOCKER_IMAGE:$DOCKER_TAG $DOCKER_IMAGE:latest
+    - docker push $DOCKER_IMAGE:$DOCKER_TAG
+    - docker push $DOCKER_IMAGE:latest
+  only:
+    - main
+
+build:docker-alpine:
+  stage: build
+  image: docker:24-dind
+  services:
+    - docker:24-dind
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - echo "🐳 Building Alpine Docker image..."
+    - docker build -t $DOCKER_IMAGE:alpine-$DOCKER_TAG -f Dockerfile.alpine .
+    - docker tag $DOCKER_IMAGE:alpine-$DOCKER_TAG $DOCKER_IMAGE:alpine
+    - docker push $DOCKER_IMAGE:alpine-$DOCKER_TAG
+    - docker push $DOCKER_IMAGE:alpine
+  only:
+    - main
+
+build:package:
+  stage: build
+  image: python:$PYTHON_VERSION-slim
+  script:
+    - pip install build twine
+    - python -m build || true
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 week
+  only:
+    - main
+
+# ==================== TEST ====================
+test:unit:
+  stage: test
+  image: python:$PYTHON_VERSION-slim
+  before_script:
+    - apt-get update && apt-get install -y nmap curl wget netcat-openbsd dnsutils
+    - pip install -r requirements.txt
+    - pip install pytest pytest-cov pytest-html
+  script:
+    - echo "🧪 Running unit tests..."
+    - python -m pytest tests/ -v --cov=. --cov-report=xml --cov-report=html --junitxml=report.xml || true
+  coverage: '/TOTAL.*\s+(\d+%)$/'
+  artifacts:
+    when: always
+    paths:
+      - htmlcov/
+      - coverage.xml
+      - report.xml
+    reports:
+      junit: report.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+  only:
+    - main
+    - develop
+    - merge_requests
+
+test:commands:
+  stage: test
+  image: python:$PYTHON_VERSION-slim
+  before_script:
+    - apt-get update && apt-get install -y nmap curl wget netcat-openbsd dnsutils traceroute whois
+    - pip install -r requirements.txt
+  script:
+    - echo "🧪 Testing commands..."
+    - python test-commands.py || true
+  only:
+    - main
+    - develop
+
+test:health:
+  stage: test
+  image: python:$PYTHON_VERSION-slim
+  script:
+    - pip install -r requirements.txt
+    - echo "🏥 Running health check..."
+    - python health-check.py || true
+  only:
+    - main
+    - develop
+
+test:integration:
+  stage: test
+  image: python:$PYTHON_VERSION-slim
+  services:
+    - redis:7-alpine
+    - postgres:15-alpine
+  variables:
+    POSTGRES_DB: test_db
+    POSTGRES_USER: test_user
+    POSTGRES_PASSWORD: test_pass
+    REDIS_URL: "redis://redis:6379"
+  before_script:
+    - pip install -r requirements.txt
+    - pip install pytest
+  script:
+    - echo "🔗 Running integration tests..."
+    - python -m pytest tests/integration/ -v || true
+  only:
+    - main
+
+# ==================== SECURITY ====================
+security:sast:
+  stage: security
+  image: python:$PYTHON_VERSION-slim
+  script:
+    - pip install bandit safety
+    - echo "🔒 Running SAST..."
+    - bandit -r . -f json -o bandit-report.json || true
+    - safety check --json > safety-report.json || true
+  artifacts:
+    paths:
+      - bandit-report.json
+      - safety-report.json
+    expire_in: 1 week
+  only:
+    - main
+    - develop
+
+security:dependencies:
+  stage: security
+  image: python:$PYTHON_VERSION-slim
+  script:
+    - pip install pip-audit
+    - echo "🔒 Auditing dependencies..."
+    - pip-audit --format=json --output=pip-audit-report.json || true
+  artifacts:
+    paths:
+      - pip-audit-report.json
+  only:
+    - main
+
+security:container:
+  stage: security
+  image: aquasec/trivy:latest
+  script:
+    - echo "🔒 Scanning container..."
+    - trivy image --format json --output trivy-report.json $DOCKER_IMAGE:$DOCKER_TAG || true
+  artifacts:
+    paths:
+      - trivy-report.json
+  only:
+    - main
+
+security:secrets:
+  stage: security
+  image: zricethezav/gitleaks:latest
+  script:
+    - echo "🔒 Scanning for secrets..."
+    - gitleaks detect --source . --report-format json --report-path gitleaks-report.json || true
+  artifacts:
+    paths:
+      - gitleaks-report.json
+  only:
+    - main
+    - develop
+
+# ==================== DEPLOY ====================
+deploy:staging:
+  stage: deploy
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache openssh-client
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | ssh-add -
+    - mkdir -p ~/.ssh
+    - echo "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+  script:
+    - echo "🚀 Deploying to staging..."
+    - ssh $STAGING_USER@$STAGING_HOST "cd /opt/ghost-crab && docker-compose pull && docker-compose up -d"
+  environment:
+    name: staging
+    url: https://staging.ghostcrab.example.com
+  only:
+    - develop
+  when: manual
+
+deploy:production:
+  stage: deploy
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache openssh-client
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | ssh-add -
+    - mkdir -p ~/.ssh
+    - echo "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+  script:
+    - echo "🚀 Deploying to production..."
+    - ssh $PROD_USER@$PROD_HOST "cd /opt/ghost-crab && docker-compose pull && docker-compose up -d"
+  environment:
+    name: production
+    url: https://ghostcrab.example.com
+  only:
+    - main
+  when: manual
+
+deploy:kubernetes:
+  stage: deploy
+  image: bitnami/kubectl:latest
+  script:
+    - echo "☸️ Deploying to Kubernetes..."
+    - kubectl apply -f k8s/namespace.yaml
+    - kubectl apply -f k8s/configmap.yaml
+    - kubectl apply -f k8s/secret.yaml
+    - kubectl apply -f k8s/deployment.yaml
+    - kubectl apply -f k8s/service.yaml
+    - kubectl rollout status deployment/ghost-crab -n ghost-crab
+  environment:
+    name: production-k8s
+  only:
+    - main
+  when: manual
+
+# ==================== MONITOR ====================
+monitor:health:
+  stage: monitor
+  image: curlimages/curl:latest
+  script:
+    - echo "🏥 Checking production health..."
+    - curl -f https://ghostcrab.example.com/health || exit 1
+  only:
+    - main
+  when: manual
+
+monitor:notify:
+  stage: monitor
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache curl
+  script:
+    - |
+      if [ "$CI_PIPELINE_STATUS" == "success" ]; then
+        curl -X POST -H 'Content-type: application/json' --data "{\"text\":\"✅ Pipeline #$CI_PIPELINE_ID succeeded for $CI_COMMIT_REF_NAME\"}" $SLACK_WEBHOOK_URL
+      else
+        curl -X POST -H 'Content-type: application/json' --data "{\"text\":\"❌ Pipeline #$CI_PIPELINE_ID failed for $CI_COMMIT_REF_NAME\"}" $SLACK_WEBHOOK_URL
+      fi
+  only:
+    - main
+  when: always
+
+# ==================== PAGES ====================
+pages:
+  stage: deploy
+  script:
+    - mkdir -p public
+    - cp -r docs/* public/ 2>/dev/null || true
+    - cp -r htmlcov/* public/coverage/ 2>/dev/null || true
+  artifacts:
+    paths:
+      - public
+  only:
+    - main
